@@ -12,14 +12,37 @@ namespace reed
 {
 	using std::string_view;
 
+	template <class T>
+	using ResultOf = decltype(std::declval<T>()(string_view{}));
+
+	template <class T>
+	static constexpr bool simple = std::is_same_v<int, reed::ResultOf<T>>;
+
+
+	struct Mismatch
+	{
+		constexpr operator int() const { return -1; }
+	};
+	static constexpr Mismatch mismatch = {};
+
+	struct Empty
+	{
+		friend constexpr bool operator==(int length, Empty) { return length <= 0; }
+		friend constexpr bool operator==(Empty, int length) { return length <= 0; }
+	};
+	static constexpr Empty empty = {};
+
+	inline int max(int a, int b) { return a < b ? b : a; }
+	inline int length(int a) { return a; }
+
 	template <char... Chars>
 	struct Ch
 	{
 		int operator()(string_view in) const
 		{
 			if (in.empty())
-				return -1;
-			return (... || (Chars == in.front())) ? 1 : -1;
+				return mismatch;
+			return (... || (Chars == in.front())) ? 1 : mismatch;
 		}
 	};
 
@@ -31,7 +54,7 @@ namespace reed
 	{
 		int operator()(string_view in) const
 		{
-			return (!in.empty() && ((First <= in.front()) & (in.front() <= Last))) ? 1 : -1;
+			return (!in.empty() && ((First <= in.front()) & (in.front() <= Last))) ? 1 : mismatch;
 		}
 	};
 
@@ -44,16 +67,9 @@ namespace reed
 		int operator()(string_view in) const
 		{
 			if (in.size() < sizeof...(Chars))
-				return false;
-			return (... && (in.front() == Chars && (in.remove_prefix(1), true))) ? sizeof...(Chars) : -1;
-		}
-	private:
-		static bool _check_one(string_view& in, char ch)
-		{
-			if (in.front() != ch)
-				return false;
-			in.remove_prefix(1);
-			return true;
+				return mismatch;
+			return (... && (in.front() == Chars && (in.remove_prefix(1), true))) ? 
+				sizeof...(Chars) : mismatch;
 		}
 	};
 
@@ -68,7 +84,7 @@ namespace reed
 		{
 			return in.size() >= string.size() && 
 				in.substr(0, string.size()) == string ? 
-				string.size() : -1;
+				string.size() : mismatch;
 		}
 	};
 
@@ -82,21 +98,21 @@ namespace reed
 
 		constexpr AtLeast(T sub, int min) : T(std::move(sub)), min(min) { }
 
-		int operator()(string_view in) const
+		auto operator()(string_view in) const
 		{
-			int result = 0;
+			ResultOf<T> result = 0;
 			for (int c = 0; ; ++c)
 			{
-				const int subres = T::operator()(in);
-				if (subres <= 0)
-					return c < min ? -1 : result;
-				result += subres;
+				auto subres = T::operator()(in);
+				if (subres == empty)
+					return c < min ? mismatch : result;
 				in.remove_prefix(subres);
+				result += std::move(subres);
 			}
 		}
 	};
 
-	template <class T>
+	template <class T, class = ResultOf<T>>
 	constexpr AtLeast<T> operator+(int min, T expr) { return { expr, min }; }
 
 	template <class T>
@@ -104,16 +120,16 @@ namespace reed
 	{
 		constexpr AnyNumber(T sub) : T(std::move(sub)) { }
 
-		int operator()(string_view in) const
+		auto operator()(string_view in) const
 		{
-			int result = 0;
+			reed::ResultOf<T> result = 0;
 			for (;;)
 			{
 				const auto subres = T::operator()(in);
-				if (subres <= 0)
+				if (subres == empty)
 					return result;
-				result += subres;
-				in.remove_prefix(subres);
+				in.remove_prefix(length(subres));
+				result += std::move(subres);
 			}
 		}
 	};
@@ -128,22 +144,23 @@ namespace reed
 
 		int operator()(string_view in) const
 		{
-			int result = T::operator()(in);
-			if (result <= 0)
+			ResultOf<T> result = 0;
+			result += T::operator()(in);
+			if (result == empty)
 				return result;
 			in.remove_prefix(result);
 			for (;;)
 			{
-				const auto subres = T::operator()(in);
-				if (subres <= 0)
+				auto subres = T::operator()(in);
+				if (subres == empty)
 					return result;
-				result += subres;
-				in.remove_prefix(subres);
+				in.remove_prefix(length(subres));
+				result += std::move(subres);
 			}
 		}
 	};
 
-	template <class T>
+	template <class T, class = ResultOf<T>>
 	constexpr AtLeastOne<T> operator+(T expr) { return { std::move(expr) }; }
 
 	template <class First, class Then>
@@ -151,15 +168,17 @@ namespace reed
 	{
 		constexpr Seq(First first, Then then) : First(std::move(first)), Then(std::move(then)) { }
 
-		int operator()(string_view in) const
+		decltype(std::declval<ResultOf<First>>() + std::declval<ResultOf<Then>>())
+			operator()(string_view in) const
 		{
-			const auto firstres = First::operator()(in);
-			if (firstres < 0)
-				return -1;
-			const auto thenres = Then::operator()(in.substr(firstres));
-			if (thenres < 0)
-				return -1;
-			return firstres + thenres;
+			auto firstres = First::operator()(in);
+			if (firstres == mismatch)
+				return mismatch;
+			in.remove_prefix(length(firstres));
+			auto thenres = Then::operator()(in);
+			if (thenres == mismatch)
+				return mismatch;
+			return std::move(firstres) + std::move(thenres);
 		}
 	};
 
@@ -171,11 +190,9 @@ namespace reed
 	{
 		constexpr Branch(A a, B b) : A(std::move(a)), B(std::move(b)) { }
 
-		int operator()(string_view in) const
+		auto operator()(string_view in) const
 		{
-			const auto ares = A::operator()(in);
-			const auto bres = B::operator()(in);
-			return ares > bres ? ares : bres;
+			return max(A::operator()(in), B::operator()(in));
 		}
 	};
 
@@ -187,10 +204,12 @@ namespace reed
 	{
 		constexpr Maybe(T sub) : T(std::move(sub)) { }
 
-		int operator()(string_view in) const
+		auto operator()(string_view in) const
 		{
-			const auto res = T::operator()(in);
-			return res < 0 ? 0 : res;
+			auto res = T::operator()(in);
+			if (res == mismatch)
+				res = 0;
+			return res;
 		}
 	};
 	template <class T>
@@ -201,25 +220,28 @@ namespace reed
 	{
 		constexpr Split(Item item, Sep sep) : Item(std::move(item)), Sep(std::move(sep)) { }
 
-		int operator()(string_view in) const
+		auto operator()(string_view in) const
 		{
-			int result = Item::operator()(in);
-			if (result < 0)
-				return -1;
-			in.remove_prefix(result);
+			std::conditional_t<simple<Item>, reed::ResultOf<Sep>, reed::ResultOf<Item>> result = 0;
+			result += Item::operator()(in);
+			if (result == mismatch)
+				return result;
+			in.remove_prefix(length(result));
 			for (;;)
 			{
-				const auto sepres = Sep::operator()(in);
-				if (sepres < 0)
+				auto sepres = Sep::operator()(in);
+				if (sepres == mismatch)
 					return result;
-				in.remove_prefix(sepres);
-				const auto subres = Item::operator()(in);
-				if (subres < 0)
+				auto subres = Item::operator()(in.substr(length(sepres)));
+				if (subres == mismatch)
 					return result;
-				in.remove_prefix(subres);
-				if (sepres + subres == 0)
+				if (sepres == empty && subres == empty)
 					return result;
-				result += sepres + subres;
+
+				in.remove_prefix(length(sepres) + length(subres));
+
+				result += std::move(sepres);
+				result += std::move(subres);
 			}
 		}
 	};
@@ -229,17 +251,85 @@ namespace reed
 
 	class Rule
 	{
+	public:
+		struct Impl;
+		using PImpl = std::unique_ptr<Impl>;
+		class Result
+		{
+			friend class Rule;
+			std::shared_ptr<PImpl> _rule;
+		public:
+			int length = mismatch;
+			std::string literal;
+			std::vector<Result> parts;
+
+			Result() = default;
+			Result(int length) : length(length) { }
+			Result(Mismatch) : length(mismatch) { }
+
+			const Rule& rule() const;
+
+			friend bool operator==(const Result& r, Mismatch) { return r.length == mismatch; }
+			friend bool operator==(Mismatch, const Result& r) { return r.length == mismatch; }
+
+			friend bool operator==(const Result& r, Empty) { return r.length == empty; }
+			friend bool operator==(Empty, const Result& r) { return r.length == empty; }
+
+			void operator+=(int len) { if (length == mismatch) length = 0; length += len; }
+			void operator+=(Result&& part)
+			{
+				*this += part.length;
+				parts.emplace_back(std::move(part));
+			}
+
+			friend Result operator+(Result&& a, int b)
+			{
+				a.length += b;
+				return std::move(a);
+			}
+			friend Result operator+(int a, Result&& b)
+			{
+				b.length += a;
+				return std::move(b);
+			}
+			friend Result operator+(Result&& a, Result&& b)
+			{
+				if (a == empty) return std::move(b);
+				if (b == empty) return std::move(a);
+				Result result;
+				result += std::move(a);
+				result += std::move(b);
+				return result;
+			}
+			friend Result max(Result&& a, int b)
+			{
+				if (a.length >= b)
+					return std::move(a);
+				return { b };
+			}
+			friend Result max(int a, Result&& b)
+			{
+				if (a >= b.length)
+					return { a };
+				return std::move(b);
+			}
+			friend Result max(Result&& a, Result&& b)
+			{
+				return (a.length >= b.length) ? std::move(a) : std::move(b);
+			}
+
+			friend int length(const Result& a) { return a.length; }
+		};
 		struct Impl
 		{
 			virtual ~Impl() = default;
 
-			virtual int apply(string_view in) const = 0;
+			virtual Result apply(string_view in) const = 0;
 		};
-
-		using PImpl = std::unique_ptr<Impl>;
 
 		std::shared_ptr<PImpl> _impl;
 	public:
+
 
 		static constexpr struct { } none = {};
 
@@ -259,7 +349,19 @@ namespace reed
 
 				constexpr TImpl(T&& expr) : expr(std::move(expr)) { }
 
-				int apply(string_view in) const final { return expr(in); }
+				Result apply(string_view in) const final 
+				{
+					auto expres = expr(in);
+					if constexpr (std::is_same_v<int, decltype(expres)>)
+					{
+						Result result(expres);
+						if (result.length > 0)
+							result.literal = std::string(in.substr(0, length(expres)));
+						return result;
+					}
+					else 
+						return expres; 
+				}
 			};
 
 			*_impl = std::make_unique<TImpl>(std::move(e));
@@ -267,7 +369,12 @@ namespace reed
 			return *this;
 		}
 
-		int operator()(string_view in) const { return (_impl && *_impl) ? (*_impl)->apply(in) : -1; }
+		Result operator()(string_view in) const
+		{
+			auto result = (_impl && *_impl) ? (*_impl)->apply(in) : Result{};
+			result._rule = _impl;
+			return result;
+		}
 
 		friend bool operator==(const Rule& a, decltype(none)) { return a._impl == nullptr; }
 		friend bool operator==(decltype(none), const Rule& a) { return a._impl == nullptr; }

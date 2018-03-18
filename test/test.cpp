@@ -5,7 +5,14 @@
 using namespace reed;
 
 template <class T>
-bool matches(const T& rule, string_view text) { return rule(text) == text.size(); }
+bool matches(const T& rule, string_view text) 
+{ 
+	const auto result = rule(text);
+
+	return length(result) == text.size(); 
+}
+
+
 
 #define CHECK_MATCH(rule, text) std::cout << #rule << "(\"" << text << "\"): " << (matches(rule, text) ? "yes" : "no") << "\n";
 
@@ -36,11 +43,9 @@ int main()
 		(ch<'['> & expr & ch<']'>) |
 		(ch<'['> & args & ch<']'>)));
 	Rule prefixed = maybe((chs<'+', '+'>) & *sp) & suffixed;
-	Rule term = prefixed % (*sp & ch<'*', '/', '%'> & *sp);
-	Rule sum = term % (*sp & ch<'+', '-'> & *sp);
+	Rule term_op = ch<'*', '/', '%'>, term = prefixed % (*sp % term_op);
+	Rule sum_op = ch<'+', '-'>, sum = term % (*sp % sum_op);
 	expr = name | (ch<'('> & sum & ch<')'>);
-
-	const auto matches = [](auto&& rule, string_view text) { return rule(text) == text.length(); };
 
 	CHECK_MATCH(name, "_foo");
 	CHECK_MATCH(name, "f00_b4r");
