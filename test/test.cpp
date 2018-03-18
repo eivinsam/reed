@@ -4,25 +4,54 @@
 
 using namespace reed;
 
+template <class T>
+bool matches(const T& rule, string_view text) { return rule(text) == text.size(); }
+
+#define CHECK_MATCH(rule, text) std::cout << #rule << "(\"" << text << "\"): " << (matches(rule, text) ? "yes" : "no") << "\n";
 
 int main()
 {
-	auto space = ch(' ') | ch('\t') | ch('\n') | ch('\r');
-	auto letter = ch('a', 'z') | ch('A', 'Z');
-	auto digit = ch('0', '9');
+	constexpr auto sp = ch<' ', '\t', '\n', '\r'>;
+	constexpr auto lowercase = chr<'a', 'z'>;
+	constexpr auto uppercase = chr<'A', 'Z'>;
+	constexpr auto digit     = chr<'0', '9'>;
+	constexpr auto letter = lowercase | uppercase;
 
-	auto name_initial = ch('_') | letter;
+	constexpr auto name_initial = ch<'_'> | letter;
 
-	auto name = name_initial & (0 + (name_initial | digit));
+	Rule name = (name_initial & *(name_initial | digit)) % (*sp & chs<':', ':'> & *sp);
 
-	auto type = maybe(str("const") & (1 + space)) & name;
+	Rule constant = str("const");
 
-	std::cout << name("_foo") << "\n";
-	std::cout << name("f00_b4r") << "\n";
-	std::cout << name("0f") << "\n";
-	std::cout << type("const baf") << "\n";
-	std::cout << type("const 0") << "\n";
-	std::cout << type("cnost foo") << "\n";
+	Rule type = maybe(constant & +sp) & name;
+
+	Rule expr;
+
+	Rule args = expr % (*sp & ch<','> & *sp);
+
+	Rule suffixed = expr & maybe(*sp & (
+		chs<'+', '+'> | chs<'-', '-'> | 
+		((ch<'.'> | chs<'-', '>'>) & *sp & name ) |
+		(ch<'('> & args & ch<')'>) | 
+		(ch<'['> & expr & ch<']'>) |
+		(ch<'['> & args & ch<']'>)));
+	Rule prefixed = maybe((chs<'+', '+'>) & *sp) & suffixed;
+	Rule term = prefixed % (*sp & ch<'*', '/', '%'> & *sp);
+	Rule sum = term % (*sp & ch<'+', '-'> & *sp);
+	expr = name | (ch<'('> & sum & ch<')'>);
+
+	const auto matches = [](auto&& rule, string_view text) { return rule(text) == text.length(); };
+
+	CHECK_MATCH(name, "_foo");
+	CHECK_MATCH(name, "f00_b4r");
+	CHECK_MATCH(name, "0f");
+	CHECK_MATCH(name, "foo::bar");
+	
+	CHECK_MATCH(term, "a + b");
+	CHECK_MATCH(term, "++a-> b * c");
+	CHECK_MATCH(term, "a*b + c");
+	CHECK_MATCH(sum, "a*b + c");
+	CHECK_MATCH(term, "a*(b+c)");
 
 	return 0;
 }
